@@ -15,7 +15,7 @@ TELEGRAM_TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 DEEPSEEK_API_KEY  = os.getenv("DEEPSEEK_API_KEY")
 
-SCAN_INTERVAL        = 300   # every 5 minutes
+SCAN_INTERVAL        = 30   # every 5 minutes
 MIN_VOLUME_1H        = 50000
 MIN_LIQUIDITY        = 20000
 MIN_PRICE_CHANGE     = 10
@@ -603,7 +603,15 @@ def main():
 
     logger.info("🚀 JunLuisify Signal Bot starting...")
     app.run_polling(drop_pending_updates=True)
+def run_once():
+    """Run a single scan cycle for GitHub Actions"""
+    import asyncio
+    from telegram import Bot
+    bot = Bot(token=TELEGRAM_TOKEN)
+    asyncio.run(scan_and_signal(bot))
 
+if __name__ == "__main__":
+    run_once()
 
 if __name__ == "__main__":
     main()
