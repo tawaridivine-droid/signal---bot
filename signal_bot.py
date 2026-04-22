@@ -614,4 +614,14 @@ if __name__ == "__main__":
     run_once()
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    from telegram import Bot
+
+    async def run_once():
+        bot = Bot(token=TELEGRAM_TOKEN)
+        await bot.initialize()
+        logger.info("🔍 Scanning...")
+        await scan_and_signal(bot)
+        await bot.shutdown()
+
+    asyncio.run(run_once())
