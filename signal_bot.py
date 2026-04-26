@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 MIN_VOLUME_1H       = 10000
 MIN_LIQUIDITY       = 8000
