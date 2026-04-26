@@ -463,37 +463,24 @@ async def scan_and_signal(bot):
         except:
             continue
 
-        # Basic filters
-        if liquidity < MIN_LIQUIDITY:   continue
-        if volume_1h < MIN_VOLUME_1H:   continue
-        if price_usd <= 0:              continue
+        if liquidity < MIN_LIQUIDITY: continue
+        if volume_1h < MIN_VOLUME_1H: continue
+        if price_usd <= 0: continue
+        if not (MIN_PRICE_CHANGE <= price_change <= MAX_PRICE_CHANGE): continue
 
-        # Token age — fresh only
         age_ok, token_age = check_token_age(token_data)
         if not age_ok:
             logger.info(f"⏳ Too old: {addr} ({token_age})")
             continue
 
-        # Smart entry timing — early entries only
-        entry_ok, entry_reason, entry_change = check_entry_timing(token_data)
-        if not entry_ok:
-            stats["late_entries_skipped"] += 1
-            logger.info(f"⛔ Late entry skipped: {addr} ({entry_reason} {entry_change:.1f}%)")
-            continue
-
-        # Buy/sell ratio
         ratio_ok, buy_sell_ratio = check_buy_sell_ratio(token_data)
         if not ratio_ok:
             logger.info(f"📉 Bad ratio: {addr} ({buy_sell_ratio}x)")
             continue
 
-        # Volume momentum
-        vol_ok, vol_5m, vol_1h = check_volume_momentum(token_data)
-        if not vol_ok:
-            logger.info(f"📊 Weak volume momentum: {addr}")
-            continue
+        entry_reason = "momentum"
+        vol_5m = float(token_data.get("volume", {}).get("m5", 0) or 0)
 
-        # Safety checks
         rugcheck = check_rugcheck(addr)
         if not rugcheck["safe"]:
             stats["scams_filtered"] += 1
@@ -506,10 +493,8 @@ async def scan_and_signal(bot):
             logger.info(f"❌ Honeypot: {addr}")
             continue
 
-        # Whale activity
         whale_active, whale_count = check_whale_activity(addr)
 
-        # DeepSeek AI validation
         ai_result = validate_with_deepseek(
             token_data, rugcheck, buy_sell_ratio, whale_count, entry_reason
         )
@@ -518,7 +503,6 @@ async def scan_and_signal(bot):
             logger.info(f"🤖 AI rejected: {addr} ({ai_result.get('confidence', 0)}%)")
             continue
 
-        # All checks passed — send signal!
         levels  = calculate_levels(price_usd, price_change)
         message = format_signal(
             token_data, levels, ai_result, rugcheck,
@@ -548,7 +532,6 @@ async def scan_and_signal(bot):
         logger.info("No qualifying early gems this cycle")
     else:
         logger.info(f"✅ {signals_sent} signal(s) sent")
-
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 async def main():
