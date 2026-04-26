@@ -13,36 +13,44 @@ TELEGRAM_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-# ── Filters ───────────────────────────────────────────────────────────────────
-MIN_VOLUME_1H         = 10000
-MIN_LIQUIDITY         = 8000
-MIN_PRICE_CHANGE      = 3
-MAX_PRICE_CHANGE      = 40    # Only early pumps — not late entries
-MIN_RUGCHECK_SCORE    = 45
-MOONBAG_PERCENT       = 20
-MIN_BUY_SELL_RATIO    = 1.1
-MAX_TOKEN_AGE_HOURS   = 72    # Only fresh tokens under 24 hours
-MIN_AI_CONFIDENCE     = 60    # Stricter AI filter
-MIN_WHALE_WALLETS     = 3     # Minimum whale wallets buying
+MIN_VOLUME_1H       = 10000
+MIN_LIQUIDITY       = 8000
+MIN_PRICE_CHANGE    = 3
+MAX_PRICE_CHANGE    = 40
+MIN_RUGCHECK_SCORE  = 45
+MOONBAG_PERCENT     = 20
+MIN_BUY_SELL_RATIO  = 1.1
+MAX_TOKEN_AGE_HOURS = 72
+MIN_AI_CONFIDENCE   = 60
 
 stats = {
     "signals_sent": 0,
     "scams_filtered": 0,
     "ai_rejections": 0,
-    "late_entries_skipped": 0,
     "start_time": datetime.now()
 }
 
 
-# ── DexScreener ───────────────────────────────────────────────────────────────
 def get_trending_solana_tokens():
     candidates = []
     try:
-        urls = [
+        for query in ["new", "pump", "sol", "meme"]:
+            try:
+                url = f"https://api.dexscreener.com/latest/dex/search?q={query}"
+                resp = requests.get(url, timeout=15)
+                if resp.status_code == 200:
+                    for pair in resp.json().get("pairs", []):
+                        if pair.get("chainId") == "solana":
+                            addr = pair.get("baseToken", {}).get("address")
+                            if addr:
+                                candidates.append(addr)
+            except:
+                continue
+
+        for url in [
             "https://api.dexscreener.com/token-boosts/latest/v1",
             "https://api.dexscreener.com/token-boosts/top/v1"
-        ]
-        for url in urls:
+        ]:
             try:
                 resp = requests.get(url, timeout=15)
                 if resp.status_code == 200:
@@ -50,23 +58,15 @@ def get_trending_solana_tokens():
                     if isinstance(data, list):
                         for item in data:
                             if item.get("chainId") == "solana":
-                                candidates.append(item.get("tokenAddress"))
+                                addr = item.get("tokenAddress")
+                                if addr:
+                                    candidates.append(addr)
             except:
                 continue
 
-        # Search for NEW tokens specifically
-        new_url = "https://api.dexscreener.com/latest/dex/search?q=solana"
-        resp = requests.get(new_url, timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            for pair in data.get("pairs", []):
-                if pair.get("chainId") == "solana":
-                    addr = pair.get("baseToken", {}).get("address")
-                    if addr:
-                        candidates.append(addr)
     except Exception as e:
         logger.error(f"DexScreener error: {e}")
-    return list(set(filter(None, candidates)))[:50]
+    return list(set(filter(None, candidates)))[:60]
 
 
 def get_token_data(token_address):
@@ -74,8 +74,7 @@ def get_token_data(token_address):
         url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
         resp = requests.get(url, timeout=15)
         if resp.status_code == 200:
-            data = resp.json()
-            pairs = data.get("pairs", [])
+            pairs = resp.json().get("pairs", [])
             sol_pairs = [p for p in pairs if p.get("chainId") == "solana"]
             if not sol_pairs:
                 return None
@@ -85,106 +84,6 @@ def get_token_data(token_address):
     return None
 
 
-# ── Volume Momentum Check ─────────────────────────────────────────────────────
-def check_volume_momentum(token_data):
-    """Volume must be increasing — rising volume = real buying pressure"""
-    try:
-        vol_5m  = float(token_data.get("volume", {}).get("m5", 0) or 0)
-        vol_1h  = float(token_data.get("volume", {}).get("h1", 0) or 0)
-        vol_6h  = float(token_data.get("volume", {}).get("h6", 0) or 0)
-
-        # 1h volume should be higher than average 1h from 6h period
-        avg_1h_from_6h = vol_6h / 6 if vol_6h > 0 else 0
-
-        # Volume is accelerating if current 1h > average 1h
-        accelerating = vol_1h > avg_1h_from_6h if avg_1h_from_6h > 0 else True
-
-        # 5min volume must show active buying
-        active_buying = vol_5m > (vol_1h / 12) if vol_1h > 0 else False
-
-        return accelerating and active_buying, vol_5m, vol_1h
-    except:
-        return False, 0, 0
-
-
-# ── Whale Detector ────────────────────────────────────────────────────────────
-def check_whale_activity(token_address):
-    """Check if big wallets are buying using Solscan"""
-    try:
-        # Use DexScreener transactions as proxy for whale activity
-        url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
-        resp = requests.get(url, timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            pairs = data.get("pairs", [])
-            if not pairs:
-                return False, 0
-
-            pair = pairs[0]
-            txns = pair.get("txns", {})
-            buys_5m  = txns.get("m5", {}).get("buys", 0)
-            sells_5m = txns.get("m5", {}).get("sells", 0)
-            buys_1h  = txns.get("h1", {}).get("buys", 0)
-
-            vol_5m = float(pair.get("volume", {}).get("m5", 0) or 0)
-
-            # Estimate whale activity:
-            # If volume per transaction is high = big wallets buying
-            avg_buy_size = (vol_5m / buys_5m) if buys_5m > 0 else 0
-
-            # Whale = avg buy size > $500
-            whale_buying = avg_buy_size > 500
-            whale_count  = int(vol_5m / 500) if whale_buying else 0
-
-            # Also check if buying is accelerating in last 5 mins
-            buy_acceleration = buys_5m > (buys_1h / 12) if buys_1h > 0 else False
-
-            return whale_buying or buy_acceleration, whale_count
-    except Exception as e:
-        logger.error(f"Whale check error: {e}")
-    return False, 0
-
-
-# ── Entry Timing ──────────────────────────────────────────────────────────────
-def check_entry_timing(token_data):
-    """
-    Smart entry timing:
-    - Coin should be pumping but NOT overextended
-    - Best entry: early momentum, not peak
-    """
-    try:
-        price_change_5m  = float(token_data.get("priceChange", {}).get("m5", 0) or 0)
-        price_change_1h  = float(token_data.get("priceChange", {}).get("h1", 0) or 0)
-        price_change_6h  = float(token_data.get("priceChange", {}).get("h6", 0) or 0)
-        price_change_24h = float(token_data.get("priceChange", {}).get("h24", 0) or 0)
-
-        # REJECT: Already overextended (pump already happened)
-        if price_change_1h > MAX_PRICE_CHANGE:
-            return False, "overextended", price_change_1h
-
-        # REJECT: Dumping — 5min negative when 1h positive
-        if price_change_5m < -5 and price_change_1h > 10:
-            return False, "dumping", price_change_1h
-
-        # REJECT: 24h already pumped too much
-        if price_change_24h > 500:
-            return False, "already pumped 24h", price_change_24h
-
-        # GOOD ENTRY: Early momentum building
-        if 5 <= price_change_1h <= 25 and price_change_5m > 0:
-            return True, "early momentum", price_change_1h
-
-        # GOOD ENTRY: Recovering from dip with fresh momentum
-        if price_change_6h < 0 and price_change_1h > 5:
-            return True, "dip recovery", price_change_1h
-
-        return False, "no clear entry", price_change_1h
-
-    except:
-        return False, "timing check failed", 0
-
-
-# ── Safety Checks ─────────────────────────────────────────────────────────────
 def check_rugcheck(token_address):
     try:
         url = f"https://api.rugcheck.xyz/v1/tokens/{token_address}/report/summary"
@@ -194,12 +93,9 @@ def check_rugcheck(token_address):
             score = data.get("score", 0)
             risks = data.get("risks", [])
             critical = [r for r in risks if r.get("level") == "danger"]
-            return {
-                "score": score,
-                "safe": score >= MIN_RUGCHECK_SCORE and len(critical) == 0
-            }
-    except Exception as e:
-        logger.error(f"RugCheck error: {e}")
+            return {"score": score, "safe": score >= MIN_RUGCHECK_SCORE and len(critical) == 0}
+    except:
+        pass
     return {"score": 0, "safe": False}
 
 
@@ -208,8 +104,7 @@ def check_honeypot(token_address):
         url = f"https://api.honeypot.is/v2/IsHoneypot?address={token_address}&chainID=solana"
         resp = requests.get(url, timeout=15)
         if resp.status_code == 200:
-            data = resp.json()
-            return not data.get("honeypotResult", {}).get("isHoneypot", True)
+            return not resp.json().get("honeypotResult", {}).get("isHoneypot", True)
     except:
         pass
     return True
@@ -231,8 +126,7 @@ def check_token_age(token_data):
         created_at = token_data.get("pairCreatedAt")
         if not created_at:
             return True, "Unknown"
-        created = datetime.fromtimestamp(created_at / 1000)
-        hours = (datetime.now() - created).total_seconds() / 3600
+        hours = (datetime.now() - datetime.fromtimestamp(created_at / 1000)).total_seconds() / 3600
         if hours > MAX_TOKEN_AGE_HOURS:
             return False, f"{int(hours)}h old"
         return True, f"{int(hours)}h old"
@@ -240,23 +134,23 @@ def check_token_age(token_data):
         return True, "Unknown"
 
 
-# ── DeepSeek AI ───────────────────────────────────────────────────────────────
-def validate_with_deepseek(token_data, rugcheck_data, buy_sell_ratio, whale_count, entry_reason):
+def validate_with_deepseek(token_data, rugcheck_data, buy_sell_ratio):
     if not DEEPSEEK_API_KEY:
         price_change = float(token_data.get("priceChange", {}).get("h1", 0) or 0)
         volume       = float(token_data.get("volume", {}).get("h1", 0) or 0)
         liquidity    = float(token_data.get("liquidity", {}).get("usd", 0) or 0)
         score = 0
-        if 5 <= price_change <= 20: score += 30   # early momentum bonus
-        if volume > 50000:          score += 25
-        if liquidity > 20000:       score += 20
-        if buy_sell_ratio > 1.5:    score += 15
-        if whale_count > 0:         score += 10
+        if price_change > 5:   score += 25
+        if price_change > 15:  score += 15
+        if volume > 30000:     score += 25
+        if liquidity > 15000:  score += 20
+        if buy_sell_ratio > 1.2: score += 15
         return {
-            "valid": score >= 60,
+            "valid": score >= 50,
             "confidence": score,
-            "reason": f"Early momentum score {score}/100",
+            "reason": f"Momentum score {score}/100",
             "risk_level": "medium",
+            "entry_advice": "buy now",
             "mode": "momentum"
         }
 
@@ -286,15 +180,7 @@ Market Cap: ${market_cap:,.0f}
 1h Volume: ${volume_1h:,.0f}
 Liquidity: ${liquidity:,.0f}
 1h Buys/Sells: {buys}/{sells} (ratio: {buy_sell_ratio})
-Whale Wallets Detected: {whale_count}
-Entry Signal: {entry_reason}
 RugCheck Score: {rugcheck_score}/100
-
-Rules for VALID signal:
-- Must be early entry (not overextended)
-- Volume must be genuine, not wash trading
-- Whale buying = strong positive signal
-- Avoid if already pumped >25% in 1h
 
 Respond ONLY in this exact JSON with no extra text:
 {{
@@ -305,63 +191,47 @@ Respond ONLY in this exact JSON with no extra text:
   "entry_advice": "buy now or wait for dip"
 }}"""
 
-        payload = {
-            "model": "deepseek-chat",
-            "max_tokens": 250,
-            "messages": [{"role": "user", "content": prompt}]
-        }
-        headers = {
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-            "Content-Type": "application/json"
-        }
         resp = requests.post(
             "https://api.deepseek.com/v1/chat/completions",
-            json=payload, headers=headers, timeout=20
+            json={"model": "deepseek-chat", "max_tokens": 250, "messages": [{"role": "user", "content": prompt}]},
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+            timeout=20
         )
         if resp.status_code == 200:
-            data     = resp.json()
-            content  = data["choices"][0]["message"]["content"]
-            content  = content.replace("```json", "").replace("```", "").strip()
-            result   = json.loads(content)
+            content = resp.json()["choices"][0]["message"]["content"]
+            content = content.replace("```json", "").replace("```", "").strip()
+            result  = json.loads(content)
             result["mode"] = "deepseek"
             return result
     except Exception as e:
         logger.error(f"DeepSeek error: {e}")
 
-    return {"valid": False, "confidence": 0, "reason": "AI check failed", "risk_level": "high", "mode": "error"}
+    return {"valid": False, "confidence": 0, "reason": "AI check failed", "risk_level": "high", "entry_advice": "skip", "mode": "error"}
 
 
-# ── Trade Levels ──────────────────────────────────────────────────────────────
 def calculate_levels(price, price_change_1h):
     price    = float(price)
     momentum = float(price_change_1h or 0)
-
-    # Early entry = bigger TP targets
     if momentum <= 15:
         tp1_pct, tp2_pct, tp3_pct, sl_pct = 0.50, 1.00, 2.50, 0.15
     elif momentum <= 25:
         tp1_pct, tp2_pct, tp3_pct, sl_pct = 0.40, 0.80, 1.80, 0.15
     else:
         tp1_pct, tp2_pct, tp3_pct, sl_pct = 0.30, 0.60, 1.20, 0.12
-
     return {
-        "entry":    price,
-        "tp1":      round(price * (1 + tp1_pct), 10),
-        "tp2":      round(price * (1 + tp2_pct), 10),
-        "tp3":      round(price * (1 + tp3_pct), 10),
-        "sl":       round(price * (1 - sl_pct), 10),
-        "tp1_pct":  int(tp1_pct * 100),
-        "tp2_pct":  int(tp2_pct * 100),
-        "tp3_pct":  int(tp3_pct * 100),
-        "sl_pct":   int(sl_pct * 100),
+        "entry":   price,
+        "tp1":     round(price * (1 + tp1_pct), 10),
+        "tp2":     round(price * (1 + tp2_pct), 10),
+        "tp3":     round(price * (1 + tp3_pct), 10),
+        "sl":      round(price * (1 - sl_pct), 10),
+        "tp1_pct": int(tp1_pct * 100),
+        "tp2_pct": int(tp2_pct * 100),
+        "tp3_pct": int(tp3_pct * 100),
+        "sl_pct":  int(sl_pct * 100),
     }
 
 
-# ── Signal Formatter ──────────────────────────────────────────────────────────
-def format_signal(token_data, levels, ai_result, rugcheck_data,
-                  buy_sell_ratio, token_age, whale_count,
-                  entry_reason, vol_5m):
-
+def format_signal(token_data, levels, ai_result, rugcheck_data, buy_sell_ratio, token_age):
     symbol           = token_data.get("baseToken", {}).get("symbol", "?")
     name             = token_data.get("baseToken", {}).get("name", "Unknown")
     address          = token_data.get("baseToken", {}).get("address", "")
@@ -369,6 +239,7 @@ def format_signal(token_data, levels, ai_result, rugcheck_data,
     price_change_1h  = token_data.get("priceChange", {}).get("h1", 0)
     price_change_24h = token_data.get("priceChange", {}).get("h24", 0)
     volume_1h        = float(token_data.get("volume", {}).get("h1", 0) or 0)
+    vol_5m           = float(token_data.get("volume", {}).get("m5", 0) or 0)
     liquidity        = float(token_data.get("liquidity", {}).get("usd", 0) or 0)
     market_cap       = float(token_data.get("marketCap", 0) or 0)
     confidence       = ai_result.get("confidence", 0)
@@ -381,15 +252,13 @@ def format_signal(token_data, levels, ai_result, rugcheck_data,
     buys             = txns.get("buys", 0)
     sells            = txns.get("sells", 0)
 
-    conf_emoji  = "🟢" if confidence >= 80 else "🟡" if confidence >= 65 else "🔴"
-    conf_label  = "HIGH" if confidence >= 80 else "MEDIUM" if confidence >= 65 else "LOW"
-    risk_emoji  = {"low": "🟢", "medium": "🟡", "high": "🔴"}.get(risk_level, "🟡")
-    ai_badge    = "🤖 DeepSeek AI" if mode == "deepseek" else "📊 Momentum Score"
-    whale_line  = f"🐋 Whale Activity: {whale_count} large wallets buying" if whale_count > 0 else "🐋 Whale Activity: Not detected"
-    entry_tag   = "🟢 EARLY ENTRY" if "early" in entry_reason else "🔄 DIP RECOVERY"
+    conf_emoji = "🟢" if confidence >= 80 else "🟡" if confidence >= 60 else "🔴"
+    conf_label = "HIGH" if confidence >= 80 else "MEDIUM" if confidence >= 60 else "LOW"
+    risk_emoji = {"low": "🟢", "medium": "🟡", "high": "🔴"}.get(risk_level, "🟡")
+    ai_badge   = "🤖 DeepSeek AI" if mode == "deepseek" else "📊 Momentum Score"
 
     return f"""
-🚀 *SIGNAL — {symbol}* | {entry_tag}
+🚀 *SIGNAL ALERT — {symbol}* 🚀
 ━━━━━━━━━━━━━━━━━━━━━━━━
 🪙 *{symbol}* | {name}
 ⛓ Solana | 🕐 Age: {token_age}
@@ -397,7 +266,6 @@ def format_signal(token_data, levels, ai_result, rugcheck_data,
 {conf_emoji} *AI Confidence: {confidence}% ({conf_label})*
 {risk_emoji} Risk: {risk_level.upper()} | {ai_badge}
 🛡 RugCheck: {rugcheck_score}/100
-{whale_line}
 
 📈 *Price Action*
 - 5M Change: `{price_change_5m:+.1f}%`
@@ -409,7 +277,6 @@ def format_signal(token_data, levels, ai_result, rugcheck_data,
 - Market Cap: `${market_cap:,.0f}`
 - Buys/Sells: `{buys}/{sells}` ({buy_sell_ratio}x)
 
-💡 *Entry Signal: {entry_reason.upper()}*
 📌 *AI says: {entry_advice.upper()}*
 
 💰 *Trade Levels (for $1 = 0.007 SOL)*
@@ -419,8 +286,7 @@ def format_signal(token_data, levels, ai_result, rugcheck_data,
 - 🌙 TP3 (+{levels['tp3_pct']}%): `${levels['tp3']}` → Sell 80%
 - 🔴 SL (-{levels['sl_pct']}%): `${levels['sl']}`
 
-🎒 *Moonbag: Keep {MOONBAG_PERCENT}% after TP2*
-_Exit moonbag only at TP3 or if -30% from TP2_
+🎒 *Keep {MOONBAG_PERCENT}% moonbag after TP2*
 
 🧠 *AI Analysis*
 _{reason}_
@@ -434,18 +300,17 @@ _{reason}_
 - [🛡 RugCheck](https://rugcheck.xyz/tokens/{address})
 - [🐦 Birdeye](https://birdeye.so/token/{address}?chain=solana)
 
-⚠️ _DYOR — Max $1 per signal. Early entry only._
+⚠️ _DYOR — Max $1 per signal. Not financial advice._
 ⏰ {datetime.now().strftime('%H:%M:%S UTC')}
 ━━━━━━━━━━━━━━━━━━━━━━━━
 """.strip()
 
 
-# ── Main Scanner ──────────────────────────────────────────────────────────────
 async def scan_and_signal(bot):
     logger.info("🔍 Scanning for early gems...")
-    addresses     = get_trending_solana_tokens()
+    addresses    = get_trending_solana_tokens()
     logger.info(f"Candidates: {len(addresses)}")
-    signals_sent  = 0
+    signals_sent = 0
 
     for addr in addresses:
         if not addr:
@@ -463,9 +328,9 @@ async def scan_and_signal(bot):
         except:
             continue
 
-        if liquidity < MIN_LIQUIDITY: continue
-        if volume_1h < MIN_VOLUME_1H: continue
-        if price_usd <= 0: continue
+        if liquidity < MIN_LIQUIDITY:   continue
+        if volume_1h < MIN_VOLUME_1H:   continue
+        if price_usd <= 0:              continue
         if not (MIN_PRICE_CHANGE <= price_change <= MAX_PRICE_CHANGE): continue
 
         age_ok, token_age = check_token_age(token_data)
@@ -477,9 +342,6 @@ async def scan_and_signal(bot):
         if not ratio_ok:
             logger.info(f"📉 Bad ratio: {addr} ({buy_sell_ratio}x)")
             continue
-
-        entry_reason = "momentum"
-        vol_5m = float(token_data.get("volume", {}).get("m5", 0) or 0)
 
         rugcheck = check_rugcheck(addr)
         if not rugcheck["safe"]:
@@ -493,22 +355,14 @@ async def scan_and_signal(bot):
             logger.info(f"❌ Honeypot: {addr}")
             continue
 
-        whale_active, whale_count = check_whale_activity(addr)
-
-        ai_result = validate_with_deepseek(
-            token_data, rugcheck, buy_sell_ratio, whale_count, entry_reason
-        )
+        ai_result = validate_with_deepseek(token_data, rugcheck, buy_sell_ratio)
         if not ai_result.get("valid") or ai_result.get("confidence", 0) < MIN_AI_CONFIDENCE:
             stats["ai_rejections"] += 1
             logger.info(f"🤖 AI rejected: {addr} ({ai_result.get('confidence', 0)}%)")
             continue
 
         levels  = calculate_levels(price_usd, price_change)
-        message = format_signal(
-            token_data, levels, ai_result, rugcheck,
-            buy_sell_ratio, token_age, whale_count,
-            entry_reason, vol_5m
-        )
+        message = format_signal(token_data, levels, ai_result, rugcheck, buy_sell_ratio, token_age)
 
         try:
             await bot.send_message(
@@ -522,18 +376,18 @@ async def scan_and_signal(bot):
             symbol = token_data.get("baseToken", {}).get("symbol", addr)
             logger.info(f"✅ Signal sent: {symbol} | Confidence: {ai_result.get('confidence')}%")
 
-            if signals_sent >= 2:
+            if signals_sent >= 3:
                 break
 
         except Exception as e:
             logger.error(f"Send error: {e}")
 
     if signals_sent == 0:
-        logger.info("No qualifying early gems this cycle")
+        logger.info("No qualifying gems this cycle")
     else:
         logger.info(f"✅ {signals_sent} signal(s) sent")
 
-# ── Run ───────────────────────────────────────────────────────────────────────
+
 async def main():
     bot = Bot(token=TELEGRAM_TOKEN)
     await bot.initialize()
