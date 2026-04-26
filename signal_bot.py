@@ -14,15 +14,15 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 # ── Filters ───────────────────────────────────────────────────────────────────
-MIN_VOLUME_1H         = 20000
-MIN_LIQUIDITY         = 15000
-MIN_PRICE_CHANGE      = 5
-MAX_PRICE_CHANGE      = 35    # Only early pumps — not late entries
-MIN_RUGCHECK_SCORE    = 50
+MIN_VOLUME_1H         = 10000
+MIN_LIQUIDITY         = 8000
+MIN_PRICE_CHANGE      = 3
+MAX_PRICE_CHANGE      = 40    # Only early pumps — not late entries
+MIN_RUGCHECK_SCORE    = 45
 MOONBAG_PERCENT       = 20
-MIN_BUY_SELL_RATIO    = 1.3
-MAX_TOKEN_AGE_HOURS   = 48    # Only fresh tokens under 24 hours
-MIN_AI_CONFIDENCE     = 70    # Stricter AI filter
+MIN_BUY_SELL_RATIO    = 1.1
+MAX_TOKEN_AGE_HOURS   = 72    # Only fresh tokens under 24 hours
+MIN_AI_CONFIDENCE     = 60    # Stricter AI filter
 MIN_WHALE_WALLETS     = 3     # Minimum whale wallets buying
 
 stats = {
