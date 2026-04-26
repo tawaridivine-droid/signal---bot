@@ -17,11 +17,11 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 MIN_VOLUME_1H         = 20000
 MIN_LIQUIDITY         = 15000
 MIN_PRICE_CHANGE      = 5
-MAX_PRICE_CHANGE      = 25    # Only early pumps — not late entries
+MAX_PRICE_CHANGE      = 35    # Only early pumps — not late entries
 MIN_RUGCHECK_SCORE    = 50
 MOONBAG_PERCENT       = 20
 MIN_BUY_SELL_RATIO    = 1.3
-MAX_TOKEN_AGE_HOURS   = 24    # Only fresh tokens under 24 hours
+MAX_TOKEN_AGE_HOURS   = 48    # Only fresh tokens under 24 hours
 MIN_AI_CONFIDENCE     = 70    # Stricter AI filter
 MIN_WHALE_WALLETS     = 3     # Minimum whale wallets buying
 
