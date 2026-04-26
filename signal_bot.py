@@ -343,10 +343,10 @@ async def scan_and_signal(bot):
             continue
 
         rugcheck = check_rugcheck(addr)
-        if not rugcheck["safe"]:
-            stats["scams_filtered"] += 1
-            logger.info(f"❌ RugCheck fail: {addr}")
-            continue
+        if rugcheck["score"] < 10:
+    stats["scams_filtered"] += 1
+    logger.info(f"❌ RugCheck fail: {addr}")
+    continue
 
         honeypot_safe = check_honeypot(addr)
         if not honeypot_safe:
